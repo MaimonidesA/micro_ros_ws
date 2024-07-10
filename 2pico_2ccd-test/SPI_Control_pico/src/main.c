@@ -8,7 +8,6 @@
 #include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/timer.h"
-#include "hardware/spi.h"
 //#include "pico/cyw43_arch.h"
 
 
@@ -71,6 +70,7 @@ uint8_t * First_pixel_buffer_pointer = &Pixel_array_buffer[0];
 
 bool Pixel_array_buffer_1_flag = false; //*******************If true writing to buffer one. if false writing to  buffer 2. 
 uint8_t laserDetection = 0;
+uint8_t controlLaserDetection = 0;
 int Laser_height_average = 0;
 
 void SPI_init(){
@@ -125,20 +125,15 @@ float ccd_spi_read(int chip_select){
     for(uint8_t i = 0 ; i < BUF_LEN ; i++)
         {
         gpio_put(chip_select, 0);
-        //spi_write_blocking (spi_default, out_buf, 1);
         spi_write_read_blocking (spi_default, out_buf, &in_buf[i], BUF_LEN);
         gpio_put(chip_select, 1);
         }
     
     laserDetection = (in_buf[2]);
-    uint16_t ccd_in = ((uint16_t)in_buf[0]) | (((uint16_t)in_buf[1]) << 8 )/* | ((uint32_t) in_buf[2] >> 4)*/;
-     
+    uint16_t ccd_in = ((uint16_t)in_buf[0]) | (((uint16_t)in_buf[1]) << 8 )/* | ((uint32_t) in_buf[2] >> 4)*/;  
     
-    if (laserDetection == 1) {
-        
-        gpio_put(laserDetection_LED, 1);}
-    //else{gpio_put(laserDetection_LED, 0);}
-    
+    if (laserDetection == 1) {gpio_put(laserDetection_LED, 1);}
+
     return ccd_in;
 }
 
@@ -283,30 +278,30 @@ void Data_manipulation(){
         if (((int)(Pixel_array_buffer[i]) + 40) < ((int)(Average_pixels))) {
             Laser_index_sum += i;
             Laser_coverants_pixels_count++;
-            gpio_put(laserDetection_LED, 1);
+            controlLaserDetection = 1;
         }
     }
     Laser_height = (Laser_index_sum / Laser_coverants_pixels_count);
-    gpio_put(laserDetection_LED, 0);
+   //controlLaserDetection = 0;
     
-    if (Count < 10 && Laser_height != 0) {
-       Laser_height_array[Count] = Laser_height;
-       Count++;
+    if(Count < 10 && Laser_height != 0) {
+        Laser_height_array[Count] = Laser_height;
+        Count++;
     }else if(Count == 10){ 
         for (size_t i = 0; i < 10; i++)
         {
-            Laser_height_average = Laser_height_average + Laser_height_array[i];
+            Laser_height_average += Laser_height_array[i];
         }
     Control_height = (Laser_height_average * 8)/10000;
    // printf("%d \n,",Laser_height_average);
-    gpio_put(laserDetection_LED, 1);
     Count = 0;
     }
-    if(Laser_height = 0){
-        gpio_put(laserDetection_LED, 0);
+    if(Laser_height == 0){
+        controlLaserDetection = 0;
     }
     dma_channel_start(control_channel) ;
-    ADC_Status = false;    
+    ADC_Status = false; 
+    printf("Laser_height = %d \n",Laser_height );   
 }
 
 void init_Pixel_buffer(){
@@ -341,26 +336,30 @@ int main()
     
     while (1)
     {
-      for (size_t i = 0; i < 7; i++)
-      {
-        Data_manipulation();
-        uint16_t ccd_in = ccd_spi_read(CS[i]);
-        while (laserDetection)
+        size_t j = 0;
+        for (size_t i = 0; i < 7; i++)
         {
-         uint16_t ccd_in = ccd_spi_read(CS[i]);
-         Data_manipulation();
-         printf("ccd_in_%d :%d\n",i, ccd_in);
-        }
+          Data_manipulation();
+          if (controlLaserDetection == 1){gpio_put(laserDetection_LED, 1);}
+          else{gpio_put(laserDetection_LED, 0);}
+          if (laserDetection == 0 && j < 10000) 
+              {
+                  j++;
+                  laserDetection = 1;
+              }
+          uint16_t ccd_in = ccd_spi_read(CS[i]);
+          
+          while (laserDetection)
+          {   
+              uint16_t ccd_in = ccd_spi_read(CS[i]);
+              sleep_ms(1);
+              printf("ccd_in_%d :%d\n",i, ccd_in);
+              if (laserDetection == 0 && j < 100) {j++; laserDetection = 1;} 
+                
+              if (ccd_in > 3000) {break;} 
+          }
+         // printf("Laser_height = %d \n",Laser_height );
        }
-      
-      //printf("%f,\n",Control_height);
-      printf("ccd_in :%d\n",  in_buf[0]);
-     //for(uint8_t i = 0 ; i < BUF_LEN ; i++)
-       // {
-        
-        //printf(" in_buf[0] %d,", in_buf[0]);
-      // if (i  == 3){printf("\n");}
-     //  }
      
     }
     return 0;

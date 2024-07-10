@@ -10,6 +10,8 @@
 #include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/timer.h"
+#include "hardware/spi.h"
+#include "pico/multicore.h"
 
 // micro-ros includes
 #include <rcl/rcl.h>
@@ -41,13 +43,35 @@ typedef signed int fix15 ;
 
 //#define DMA_channel_2_write_address_pointer 0x58400000
 
-#define ADC_GPIO 26   //pin 31  ADC
+#define laserDetection_LED 2    //pin 4
+#define Power_LED  1            //pin 2
 
-const uint LED_PIN = 25;
+#define ADC_GPIO 26   //pin 31  ADC
 
 #define WRAPVAL 65502
 #define CLKDIV 14.5f
 #define Number_of_pixels 3694
+
+//SPI variables.
+//#define spi_default spi0
+#define BUF_LEN     4
+#define SPI_RW_LEN  1
+#define MISO 16
+#define CS_1 17
+#define CS_2 20
+#define CS_3 21
+#define CS_4 22
+#define CS_5 27
+#define CS_6 28
+#define CS_7  4
+#define SCLK 18
+#define MOSI 19
+
+uint8_t out_buf[1], in_buf[BUF_LEN], CS[7] = {CS_1, CS_2, CS_3, CS_4, CS_5, CS_6, CS_7};
+double Control_height = 0;
+uint8_t Current_perisarial = 0;
+
+uint16_t ccd_in;
 
 
 rcl_publisher_t ccd_pub;
@@ -81,6 +105,9 @@ int Laser_coverants_pixels_count = 0;
 int Laser_index_sum = 0;
 int Laser_height = 0;
 int Laser_height_average = 0;
+
+uint8_t laserDetection = 0;
+uint8_t controlLaserDetection = 0;
 
 void on_pwm_5_wrap() // PWM interrupt
 { 
@@ -134,7 +161,7 @@ void CCD_Timers()
     gpio_set_function(6, GPIO_FUNC_PWM);
     
     pwm_set_enabled(slice_num_6, true);
-    pwm_set_wrap(slice_num_6, 7500);   //Typical  1250
+    pwm_set_wrap(slice_num_6, 2500);   //Typical  1250
     pwm_set_chan_level(slice_num_6, 0, 500);   //Typical  500
 
      pwm_set_output_polarity(slice_num_6, true, true);
@@ -193,6 +220,71 @@ void ADC_DMA_config(){
        );
 }//_____________________________________________________________________________*/
 
+void SPI_init(){
+     // Enable SPI0 at 1 MHz
+  spi_init (spi_default, 1 * 2000000);
+ 
+  // Assign SPI functions to the default SPI pins
+  gpio_set_function (MISO, GPIO_FUNC_SPI);
+  gpio_set_function (SCLK, GPIO_FUNC_SPI);
+  gpio_set_function (MOSI, GPIO_FUNC_SPI);
+  //gpio_pull_up(MISO) ;
+  
+   // Configure Chip Select
+  
+  gpio_init(CS_1); // Initialise CS Pin
+  gpio_set_dir(CS_1, GPIO_OUT); // Set CS as output
+  gpio_put(CS_1, 1); // Set CS High to indicate no currect SPI communication 
+
+  gpio_init(CS_2); // Initialise CS Pin
+  gpio_set_dir(CS_2, GPIO_OUT); // Set CS as output
+  gpio_put(CS_2, 1); // Set CS High to indicate no currect SPI communication 
+
+  gpio_init(CS_3); // Initialise CS Pin
+  gpio_set_dir(CS_3, GPIO_OUT); // Set CS as output
+  gpio_put(CS_3, 1); // Set CS High to indicate no currect SPI communication 
+
+  gpio_init(CS_4); // Initialise CS Pin
+  gpio_set_dir(CS_4, GPIO_OUT); // Set CS as output
+  gpio_put(CS_4, 1); // Set CS High to indicate no currect SPI communication 
+  
+  gpio_init(CS_5); // Initialise CS Pin
+  gpio_set_dir(CS_5, GPIO_OUT); // Set CS as output
+  gpio_put(CS_5, 1); // Set CS High to indicate no currect SPI communication 
+
+  gpio_init(CS_6); // Initialise CS Pin
+  gpio_set_dir(CS_6, GPIO_OUT); // Set CS as output
+  gpio_put(CS_6, 1); // Set CS High to indicate no currect SPI communication 
+
+  gpio_init(CS_7); // Initialise CS Pin
+  gpio_set_dir(CS_7, GPIO_OUT); // Set CS as output
+  gpio_put(CS_7, 1); // Set CS High to indicate no currect SPI communication 
+  
+ // for (size_t i = 0; i < BUF_LEN; ++i) {
+ //       out_buf[i] = i;
+ //   }
+  
+ 
+}
+
+float ccd_spi_read(int chip_select){
+    
+    for(uint8_t i = 0 ; i < BUF_LEN ; i++)
+        {
+        gpio_put(chip_select, 0);
+        spi_write_read_blocking (spi_default, out_buf, &in_buf[i], BUF_LEN);
+        gpio_put(chip_select, 1);
+        }
+    
+    laserDetection = (in_buf[2]);
+    uint16_t ccd_in = ((uint16_t)in_buf[0]) | (((uint16_t)in_buf[1]) << 8 )/* | ((uint32_t) in_buf[2] >> 4)*/;  
+    
+    //if (ccd_in != 0) {gpio_put(laserDetection_LED, 1);}
+    if (laserDetection == 1) {gpio_put(laserDetection_LED, 1);}
+
+    return ccd_in;
+}
+
 void Data_manipulation(){
 
     Average_pixels = 0;
@@ -217,31 +309,93 @@ void Data_manipulation(){
         if (((int)(Pixel_array_buffer[i]) + 30) < ((int)(Average_pixels))) {
             Laser_index_sum = Laser_index_sum + i;
             Laser_coverants_pixels_count++;
+            controlLaserDetection = 1;
         }
     }
      Laser_height = (Laser_index_sum / Laser_coverants_pixels_count);
+
      if (Count < 10 && Laser_height != 0) {
         Laser_height_array[Count] = Laser_height;
         Count++;
      }else if(Count == 10){ 
         for (size_t i = 0; i < 10; i++)
         {
-            Laser_height_average = Laser_height_average + Laser_height_array[i];
+            Laser_height_average +=  Laser_height_array[i];
         }
-        position.position.z = ((double)(Laser_height_average) * 8)/10000;
-        Count = 0;
+      Control_height = (Laser_height_average * 8)/10000;
+      //position.position.z = ((double)(Laser_height_average) * 8)/10000;
+      Count = 0;
      }
-
+     if(Laser_height == 0){controlLaserDetection = 0;}
     dma_channel_start(control_channel) ;
     ADC_Status = false;
    }
 
 void Set_Z(){
-   position.position.z = (Laser_height_average * 8)/10000;
+
+   // position.position.z = Control_height;
+   // position.position.y = (double)ccd_in;
+    //position.position.x = (double)Current_perisarial;
+
+    //uint16_t ccd_in;
+    //
+    if (Current_perisarial == 9)
+    {
+     position.position.z = (Control_height -2900) / 100000;
+    }
+    if (Current_perisarial % 2 != 0 && Current_perisarial != 9)
+    {
+        position.position.z = ((double)ccd_in - 2900) / 100000;
+    }
+    if (Current_perisarial % 2 == 0)
+    {
+        position.position.z = (double)ccd_in / 100000;
+    }
+    if (controlLaserDetection == 0 && laserDetection == 0)
+    {
+        position.position.z = __builtin_inff();
+    }
+
 }
 
 void set_zero_callback(){
     //todo
+}
+
+void core_1(){
+
+    gpio_init(laserDetection_LED);
+    gpio_set_dir(laserDetection_LED, GPIO_OUT);
+    
+    SPI_init();
+ 
+    while (1)
+    {
+        Data_manipulation();
+        while (controlLaserDetection == 1)
+        {
+           Data_manipulation();
+           gpio_put(laserDetection_LED, 1);
+           Current_perisarial = 9;
+        }
+        gpio_put(laserDetection_LED, 0);
+        
+        size_t j = 0;
+        for (Current_perisarial = 0; Current_perisarial < 7; Current_perisarial++)
+        {
+          ccd_in = ccd_spi_read(CS[Current_perisarial]);
+          
+          while (laserDetection == 1)
+          {   
+              ccd_in = ccd_spi_read(CS[Current_perisarial]);
+              sleep_ms(1);
+              if (laserDetection == 0 && j < 1000) {j++; laserDetection = 1;} 
+                
+              if (ccd_in > 3000) {break;} 
+          }
+         // printf("Laser_height = %d \n",Laser_height );
+       }
+    }   
 }
 
 int main()
@@ -266,8 +420,11 @@ int main()
 	);
 
 
-    gpio_init(LED_PIN);
-    gpio_set_dir(LED_PIN, GPIO_OUT);
+    gpio_init(Power_LED);
+    gpio_set_dir(Power_LED, GPIO_OUT);
+
+    gpio_init(laserDetection_LED);
+    gpio_set_dir(laserDetection_LED, GPIO_OUT);
 
     rclc_executor_t executor;
     rcl_timer_t timer;
@@ -312,13 +469,16 @@ int main()
       &executor, &subscriber, &Set_zero,
       &set_zero_callback, ON_NEW_DATA);
 
-    gpio_put(LED_PIN, 1);
+    gpio_put(Power_LED, 1);
+
+    multicore_launch_core1(core_1);
  
     while (true)
     {
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
        
-        Data_manipulation();
+        Set_Z();
+       
         rcl_ret_t ret_Pose = rcl_publish(&ccd_pub, &position, NULL);
   
     };

@@ -16,6 +16,8 @@ target_link_libraries(${ProjectName}
     hardware_dma
     hardware_timer
     micro_ros
+    hardware_spi
+    pico_multicore
    
     )
 pico_add_extra_outputs(${ProjectName})
